@@ -6,8 +6,6 @@ const {
 } = require('discord.js');
 require('dotenv').config();
 
-const LOG_CHANNEL_ID = '1504913411010461938';
-
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
