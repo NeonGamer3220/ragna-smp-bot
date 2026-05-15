@@ -237,17 +237,32 @@ async function handleDmReply(message) {
   await message.author.send({ embeds: [questionEmbed(n, total, questions[n - 1])] }).catch(console.error);
 }
 
+/** ---------- env ---------- **/
+const GUILD_ID = process.env.GUILD_ID; // optional — instant guild syncing
+const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID || '1504913411010461938';
+
 /** ---------- events ---------- **/
 client.once('ready', async () => {
   console.log(`Logged in as ${client.user.tag}`);
   try {
-    await client.application.commands.create(
-      new SlashCommandBuilder()
-        .setName('tgfpanel')
-        .setDescription('Ragna SMP jelentkezési panel')
-        .setDMPermission(false),
-    );
-    console.log('/tgfpanel registered.');
+    const payload = new SlashCommandBuilder()
+      .setName('tgfpanel')
+      .setDescription('Ragna SMP jelentkezési panel')
+      .setDMPermission(false);
+
+    if (GUILD_ID) {
+      const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+      if (guild) {
+        await guild.commands.create(payload);
+        console.log(`/tgfpanel registered to guild ${guild.name} (${GUILD_ID}).`);
+      } else {
+        console.warn(`GUILD_ID ${GUILD_ID} not found, falling back to global.`);
+        await client.application.commands.create(payload);
+      }
+    } else {
+      await client.application.commands.create(payload);
+      console.log('/tgfpanel registered globally (may take up to ~1 hour to propagate).');
+    }
   } catch (e) {
     console.error('Slash command registration failed:', e);
   }
