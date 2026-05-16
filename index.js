@@ -102,9 +102,8 @@ function tierEmbed(rank) {
     .filter(([, r]) => r === rank)
     .map(([uid]) => {
       const u = client.users.cache.get(uid);
-      return u ? `- ${u.tag}` : null;
+      return u ? `- ${u.tag}` : `- ${uid}`;
     })
-    .filter(Boolean)
     .join('\n') || '*Nincs játékos ezen a rangon.*';
   return new EmbedBuilder()
     .setTitle(`Ragna SMP Tierlista — ${rank}`)
@@ -112,11 +111,16 @@ function tierEmbed(rank) {
 }
 
 async function syncTierlistMsgs(channel) {
-  // delete previously tracked tierlist embeds
   const guild = channel.guild;
-  if (guild && store._tlMsgs?.[guild.id]) {
+  if (!guild) { console.warn('syncTierlistMsgs: channel has no guild'); return; }
+
+  // delete previously tracked messages
+  if (store._tlMsgs?.[guild.id]) {
     for (const mid of store._tlMsgs[guild.id]) {
-      try { await channel.messages.delete(mid).catch(() => {}); } catch {}
+      try {
+        const m = await channel.messages.fetch(mid).catch(() => null);
+        if (m) await m.delete().catch(() => {});
+      } catch {}
     }
   }
   const sent = [];
@@ -452,19 +456,19 @@ async function handleDm(message) {
 const COMMANDS = [
   new SlashCommandBuilder().setName('tgfpanel').setDescription('Jelentkezési panel').setDMPermission(false),
 
-  new SlashCommandBuilder().setName('tierlist')
-    .setDescription('Tierlista embedek megjelenítése')
-    .addStringOption(o => o.setName('rank').setDescription('Egyetlen rang megjelenítése').setRequired(false)
+  new SlashCommandBuilder().setName('tierlistadd')
+    .setDescription('Játékos hozzáadása a tierlistához')
+    .addStringOption(o => o.setName('player').setDescription('Játékos Discord neve').setRequired(true))
+    .addStringOption(o => o.setName('rank').setDescription('Rang').setRequired(true)
       .addChoices(
         { name: 'S', value: 'S' }, { name: 'A', value: 'A' },
         { name: 'B', value: 'B' }, { name: 'C', value: 'C' },
         { name: 'D', value: 'D' }, { name: 'F', value: 'F' },
       )),
 
-  new SlashCommandBuilder().setName('tierlistadd')
-    .setDescription('Játékos hozzáadása a tierlistához')
-    .addStringOption(o => o.setName('player').setDescription('Játékos Discord neve').setRequired(true))
-    .addStringOption(o => o.setName('rank').setDescription('Rang').setRequired(true)
+  new SlashCommandBuilder().setName('tierlist')
+    .setDescription('Tierlista embedek küldése')
+    .addStringOption(o => o.setName('rank').setDescription('Rang').setRequired(false)
       .addChoices(
         { name: 'S', value: 'S' }, { name: 'A', value: 'A' },
         { name: 'B', value: 'B' }, { name: 'C', value: 'C' },
@@ -483,15 +487,6 @@ const COMMANDS = [
     .setDescription('Csapat vezetőjének megváltoztatása (admin)')
     .addStringOption(o => o.setName('name').setDescription('Csapat neve').setRequired(true))
     .addUserOption(o => o.setName('user').setDescription('Új vezető').setRequired(true)),
-
-  new SlashCommandBuilder().setName('tierlist')
-    .setDescription('Tierlista embedek küldése')
-    .addStringOption(o => o.setName('rank').setDescription('Rang').setRequired(false)
-      .addChoices(
-        { name: 'S', value: 'S' }, { name: 'A', value: 'A' },
-        { name: 'B', value: 'B' }, { name: 'C', value: 'C' },
-        { name: 'D', value: 'D' }, { name: 'F', value: 'F' },
-      )),
 ];
 
 async function registerCommands() {
@@ -559,19 +554,23 @@ client.on('interactionCreate', async (interaction) => {
         const player = interaction.options.getString('player').toLowerCase();
         const rank   = interaction.options.getString('rank');
         if (!player || !rank || !RANK_ORDER.includes(rank)) {
-          await interaction.reply({ content: 'Érvényes játékosnévet és rangot add meg!', ephemeral: true }); return;
+          await interaction.reply({ content: 'Érvényes Discord-nevet és rangot add meg!', ephemeral: true }); return;
         }
         store.tierlist[player] = rank;
         saveStore();
+
+        // Re-sync embeds first (delete old, post new)
+        const ch = interaction.channel;
+        if (ch) {
+          try { await syncTierlistMsgs(ch); }
+          catch(e) { console.error('syncTierlistMsgs error:', e); }
+        }
+
         await interaction.reply({
           embeds: [new EmbedBuilder().setColor(0x00FF00)
             .setTitle('Rang hozzáadva')
-            .setDescription(`**${player}** → **${rank}** rangsorhoz adva!`)],
-          ephemeral: true,
+            .setDescription(`**${player}** → **${rank}** rangsorhoz adva!\nA tierlista embedek frissítve lettek.`)],
         });
-        // Re-sync embeds into the tierlist channel
-        const tlCh = interaction.channel;
-        if (tlCh) { await syncTierlistMsgs(tlCh).catch(console.error); }
         return;
       }
 
