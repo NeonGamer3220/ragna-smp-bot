@@ -21,7 +21,7 @@ const TEAM_CREATE_ROLE  = process.env.TEAM_CREATE_ROLE || '1504866162713039002';
 const ADMIN_IDS         = new Set(
   (process.env.ADMIN_IDS || '').split(',').map(s => s.trim()).filter(Boolean)
 );
-const DATA_FILE      = path.join(__dirname, 'data.json');
+const DATA_FILE         = path.join(__dirname, 'data.json');
 
 function loadStore() {
   try { return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); }
@@ -37,6 +37,8 @@ let store = loadStore();
 const RANK_ORDER  = ['S', 'A', 'B', 'C', 'D', 'F'];
 const RANK_POINTS = { S: 16, A: 10, B: 8, C: 6, D: 4, F: 2 };
 const MAX_TEAM    = 28;
+
+// store.tierlist[discordId] = { rank: "A", mcName: "Notch", discordTag: "Notch#0001" }
 
 const SMP_QUESTIONS = [
   'Mi a minecraft neved?', 'Mi a discord neved?', 'Hány éves vagy?',
@@ -96,13 +98,20 @@ function disabledBtns() {
   );
 }
 
-/* ---------- tierlist ---------- */
+/** helpers to read tierlist safely */
+function getTier(userId) {
+  const e = store.tierlist[userId];
+  return e ? { rank: e.rank || '?', mcName: e.mcName || '-', discordTag: e.discordTag || userId } : null;
+}
+
+/** ---------- tierlist ---------- */
 function tierEmbed(rank) {
   const players = Object.entries(store.tierlist)
-    .filter(([, r]) => r === rank)
-    .map(([uid]) => {
-      const u = client.users.cache.get(uid);
-      return u ? `- ${u.tag}` : `- ${uid}`;
+    .filter(([, e]) => e.rank === rank)
+    .map(([uid, e]) => {
+      const tag   = e.discordTag || uid;
+      const mc    = e.mcName || '-';
+      return `- ${tag} | ${mc} [${rank}]`;
     })
     .join('\n') || '*Nincs játékos ezen a rangon.*';
   return new EmbedBuilder()
@@ -112,21 +121,16 @@ function tierEmbed(rank) {
 
 async function syncTierlistMsgs(channel) {
   const guild = channel.guild;
-  if (!guild) { console.warn('syncTierlistMsgs: channel has no guild'); return; }
+  if (!guild) { console.warn('syncTierlistMsgs: no guild'); return; }
 
-  // delete previously tracked messages
   if (store._tlMsgs?.[guild.id]) {
     for (const mid of store._tlMsgs[guild.id]) {
-      try {
-        const m = await channel.messages.fetch(mid).catch(() => null);
-        if (m) await m.delete().catch(() => {});
-      } catch {}
+      try { const m = await channel.messages.fetch(mid).catch(() => null); if (m) await m.delete().catch(() => {}); } catch {}
     }
   }
   const sent = [];
   for (const r of RANK_ORDER) {
-    const m = await channel.send({ embeds: [tierEmbed(r)] });
-    sent.push(m.id);
+    sent.push((await channel.send({ embeds: [tierEmbed(r)] })).id);
   }
   store._tlMsgs = store._tlMsgs || {};
   store._tlMsgs[guild.id] = sent;
@@ -136,21 +140,25 @@ async function syncTierlistMsgs(channel) {
 /* ---------- team ---------- */
 function teamPoints(team) {
   let p = 0;
-  for (const uid of team.members) { const r = store.tierlist[uid]; if (r && RANK_POINTS[r]) p += RANK_POINTS[r]; }
+  for (const uid of team.members) {
+    const tier = store.tierlist[uid];
+    if (tier && RANK_POINTS[tier.rank]) p += RANK_POINTS[tier.rank];
+  }
   return p;
 }
 
 function teamEmbed(name, team) {
   const pts  = teamPoints(team);
   const rows = RANK_ORDER.map(r => {
-    const cnt = team.members.filter(m => store.tierlist[m] === r).length;
+    const cnt = team.members.filter(m => (store.tierlist[m] || {}).rank === r).length;
     return `**${r}** — ${cnt} játékos (${cnt * (RANK_POINTS[r] || 0)} pont)`;
   });
   const members = team.members.map(uid => {
+    const e   = store.tierlist[uid];
     const u   = client.users.cache.get(uid);
-    const r   = store.tierlist[uid] || '?';
     const tag = u ? u.tag : `Unknown (${uid})`;
-    return `${tag} [${r}]`;
+    if (e) return `${tag} | ${e.mcName || '-'} [${e.rank}]`;
+    return `${tag} [?]`;
   }).join('\n') || '*Nincs tag még.*';
 
   return new EmbedBuilder()
@@ -185,8 +193,23 @@ async function updateQueueEmbed(team, channel) {
   else    { const sent = await channel.send({ embeds: [embed], components: [row] }); team.queueMsgId = sent.id; saveStore(); }
 }
 
+/** Send team-embed. Leader auto-joins with mcName from tierlist. */
 async function sendTeamCreate(channel, name, leaderId) {
-  const team = { leaderId: String(leaderId), members: [], queue: [], mcNames: {}, createdBy: String(leaderId) };
+  const tier = store.tierlist[leaderId];   // { rank, mcName, discordTag }
+
+  const team = {
+    leaderId:   String(leaderId),
+    members:    [],                       // leader added below
+    queue:      [],
+    mcNames:    {},
+    createdBy:  String(leaderId),
+  };
+
+  // Auto-add leader to their own team
+  if (tier) {
+    team.members.push(String(leaderId));
+    team.mcNames[String(leaderId)] = tier.mcName || '';
+  }
   store.teams[name] = team;
   saveStore();
 
@@ -226,10 +249,9 @@ async function finishApp(user, type, answers) {
 async function handleButton(interaction) {
   const c = interaction.customId;
 
-  /* disabled stubs */
   if (c === '_x_') { await interaction.deferUpdate(); return; }
 
-  /* ─── TGFP O L A P ─── */
+  /* TGFPanel */
   if (c === 'apply_smp' || c === 'apply_staff') {
     const type = c === 'apply_smp' ? 'smp' : 'staff';
     try {
@@ -242,23 +264,18 @@ async function handleButton(interaction) {
     return;
   }
 
-  /* ─── Tierlist ─── */
+  /* Tierlist reload */
   if (c === 'tierlist_reload') {
     await interaction.deferReply({ ephemeral: true });
-    try {
-      await syncTierlistMsgs(interaction.channel);
-      await interaction.editReply({ content: '✅ Tierlista frissítve!' });
-    } catch(e) {
-      console.error(e);
-      await interaction.followUp({ content: '❌ Hiba a tierlista frissítése közben.', ephemeral: true });
-    }
+    try { await syncTierlistMsgs(interaction.channel); await interaction.editReply({ content: '✅ Tierlista frissítve!' }); }
+    catch(e) { console.error(e); await interaction.editReply({ content: '❌ Hiba frissítés közben.' }); }
     return;
   }
 
-  /* ─── Team join ─── */
+  /* Team join */
   if (c.startsWith('tj_')) {
-    const name  = c.slice(3);
-    const uid   = String(interaction.user.id);
+    const name = c.slice(3);
+    const uid  = String(interaction.user.id);
 
     if (Object.values(store.teams).some(t => t.members.includes(uid) || t.leaderId === uid)) {
       await interaction.reply({ content: 'Már egy másik csapatban vagy!', ephemeral: true }); return;
@@ -268,28 +285,26 @@ async function handleButton(interaction) {
       return;
     }
 
-    const modal = new ModalBuilder()
-      .setCustomId(`joinm_${uid}_${name}`)
+    const modal = new ModalBuilder().setCustomId(`joinm_${uid}_${name}`)
       .setTitle(`Belépés: ${name}`)
       .addComponents(
         new ActionRowBuilder().addComponents(
           new TextInputBuilder().setCustomId('mc').setLabel('Minecraft Felhasználónév')
-            .setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('Írd be a Minecraft neved...'),
+            .setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder('Pl. notch'),
         ),
       );
     await interaction.showModal(modal);
     return;
   }
 
-  /* ─── Team leave ─── */
+  /* Team leave */
   if (c.startsWith('tl_')) {
     const name = c.slice(3);
     const team = store.teams[name];
     if (!team) { await interaction.reply({ content: 'Nem létező csapat.', ephemeral: true }); return; }
-
     const uid = String(interaction.user.id);
     if (uid === team.leaderId) {
-      await interaction.reply({ content: 'A vezető nem léphet ki! Használd a /teamdeletet vagy a /teamleadert.', ephemeral: true }); return;
+      await interaction.reply({ content: 'A vezető nem léphet ki! Használd /teamdeletet vagy /teamleadert.', ephemeral: true }); return;
     }
     const i = team.members.indexOf(uid);
     if (i === -1) { await interaction.reply({ content: 'Nem vagy tagja ennek a csapatnak.', ephemeral: true }); return; }
@@ -298,31 +313,28 @@ async function handleButton(interaction) {
     delete team.mcNames[uid];
     saveStore();
 
-    const ch = interaction.channel;
-    if (ch) {
-      // Delete old team embed and post a new one so the embed changes
-      const tank = await teamEmbed(name, team);
-      await interaction.followUp({ embeds: [tank], ephemeral: false }).catch(() => {});
-    }
-
+    await interaction.followUp({ embeds: [teamEmbed(name, team)] }).catch(() => {});
     await interaction.reply({ content: `Kiléptél a **${name}** csapatból.`, ephemeral: true }).catch(() => {});
     return;
   }
 
-  /* ─── Queue: accept ─── */
+  /* Queue: accept */
   if (c.startsWith('qa_')) {
     const name = c.slice(3);
     const team = store.teams[name];
     if (!team) return;
 
     if (String(interaction.user.id) !== team.leaderId && !ADMIN_IDS.has(String(interaction.user.id))) {
-      await interaction.reply({ content: 'Csak a csapat vezetője vagy egy admin csinálhatja!', ephemeral: true }); return;
+      await interaction.reply({ content: 'Csak a csapat vezetője vagy admin csinálhatja!', ephemeral: true }); return;
     }
     if (team.queue.length === 0) { await interaction.reply({ content: 'Nincs kiálló jelentkezés.', ephemeral: true }); return; }
 
     const entry = team.queue.shift();
     team.members.push(entry.discordId);
     team.mcNames[entry.discordId] = entry.mcName;
+    // Sync MC name into tierlist if player added with /tierlistadd had it empty
+    const tier = store.tierlist[entry.discordId];
+    if (tier && !tier.mcName) { tier.mcName = entry.mcName; }
     saveStore();
 
     await interaction.reply({ content: `✅ **${entry.mcName}** hozzáadva a **${name}** csapathoz!`, ephemeral: false }).catch(() => {});
@@ -330,59 +342,56 @@ async function handleButton(interaction) {
     return;
   }
 
-  /* ─── Queue: reject ─── */
+  /* Queue: reject */
   if (c.startsWith('qr_')) {
     const name = c.slice(3);
     const team = store.teams[name];
     if (!team) return;
 
     if (String(interaction.user.id) !== team.leaderId && !ADMIN_IDS.has(String(interaction.user.id))) {
-      await interaction.reply({ content: 'Csak a csapat vezetője vagy egy admin csinálhatja!', ephemeral: true }); return;
+      await interaction.reply({ content: 'Csak a csapat vezetője vagy admin csinálhatja!', ephemeral: true }); return;
     }
     if (team.queue.length === 0) { await interaction.reply({ content: 'Nincs kiálló jelentkezés.', ephemeral: true }); return; }
 
-    const entry = team.queue.shift();
+    team.queue.shift();
     saveStore();
-
-    await interaction.reply({ content: `❌ **${entry.mcName}** jelentkezése elutasítva.`, ephemeral: false }).catch(() => {});
+    await interaction.reply({ content: '❌ Jelentkezés elutasítva.', ephemeral: false }).catch(() => {});
     const ch = interaction.channel; if (ch) await updateQueueEmbed(team, ch).catch(() => {});
     return;
   }
 
-  /* ─── Review: approve ─── */
+  /* Review: approve */
   if (c.startsWith('ap_')) {
     const userId = c.slice(3);
-    const modal  = new ModalBuilder().setCustomId(`apm_${userId}`)
-      .setTitle('Jelentkezés elfogadása')
-      .addComponents(
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId('msg').setLabel('Elbíráló üzenet (opcionális)')
-            .setStyle(TextInputStyle.Paragraph).setRequired(false).setPlaceholder('Üzenet a jelentkezőnek...'),
-        ),
-      );
+    const modal  = new ModalBuilder().setCustomId(`apm_${userId}`).setTitle('Jelentkezés elfogadása')
+      .addComponents(new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId('msg').setLabel('Elbíráló üzenet (opcionális)')
+          .setStyle(TextInputStyle.Paragraph).setRequired(false).setPlaceholder('Üzenet...'),
+      ));
     await interaction.showModal(modal); return;
   }
 
-  /* ─── Review: reject ─── */
+  /* Review: reject */
   if (c.startsWith('ar_')) {
     const userId = c.slice(3);
-    const modal  = new ModalBuilder().setCustomId(`arm_${userId}`)
-      .setTitle('Jelentkezés elutasítása')
-      .addComponents(
-        new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId('reason').setLabel('Elutasítás indoklása')
-            .setStyle(TextInputStyle.Paragraph).setRequired(true).setPlaceholder('Miért utasítod el?'),
-        ),
-      );
+    const modal  = new ModalBuilder().setCustomId(`arm_${userId}`).setTitle('Jelentkezés elutasítása')
+      .addComponents(new ActionRowBuilder().addComponents(
+        new TextInputBuilder().setCustomId('reason').setLabel('Elutasítás indoklása')
+          .setStyle(TextInputStyle.Paragraph).setRequired(true).setPlaceholder('Miért utasítod el?'),
+      ));
     await interaction.showModal(modal); return;
   }
 }
 
 /* ---------- modal handler ---------- */
+async function sendDecision(userId, tag, msg, ok) {
+  const u = await client.users.fetch(userId).catch(() => null);
+  if (u) try { await u.send({ embeds: [decisionEmbed(tag, msg, ok)] }); } catch {}
+}
+
 async function handleModal(interaction) {
   const c = interaction.customId;
 
-  /* approve modal */
   if (c.startsWith('apm_')) {
     const userId = c.slice(4);
     const msg    = interaction.fields.getTextInputValue('msg') || '';
@@ -392,7 +401,6 @@ async function handleModal(interaction) {
     return;
   }
 
-  /* reject modal */
   if (c.startsWith('arm_')) {
     const userId = c.slice(4);
     const reason = interaction.fields.getTextInputValue('reason');
@@ -402,7 +410,7 @@ async function handleModal(interaction) {
     return;
   }
 
-  /* team join — mc name */
+  /* Team join — MC name modal */
   if (c.startsWith('joinm_')) {
     const parts  = c.split('_');
     const uid    = parts[1];
@@ -410,7 +418,7 @@ async function handleModal(interaction) {
     const mcName = interaction.fields.getTextInputValue('mc').trim();
 
     if (!store.tierlist[uid]) {
-      await interaction.reply({ content: 'Nincs rangsorod a tierlistán! Nem léphetsz csapatba.', ephemeral: true });
+      await interaction.reply({ content: 'Nincs rangsorod a tierlistán!', ephemeral: true });
       return;
     }
     const inAnother = Object.values(store.teams).some(t => t.members.includes(uid) || t.leaderId === uid);
@@ -422,15 +430,9 @@ async function handleModal(interaction) {
     saveStore();
 
     await interaction.reply({ content: `Jelentkezésed elküldve a **${tName}** vezetőjének!`, ephemeral: true }).catch(() => {});
-    const ch = interaction.channel;
-    if (ch) await updateQueueEmbed(team, ch).catch(() => {});
+    const ch = interaction.channel; if (ch) await updateQueueEmbed(team, ch).catch(() => {});
     return;
   }
-}
-
-async function sendDecision(userId, tag, msg, ok) {
-  const u = await client.users.fetch(userId).catch(() => null);
-  if (u) try { await u.send({ embeds: [decisionEmbed(tag, msg, ok)] }); } catch {}
 }
 
 /* ---------- DM handler ---------- */
@@ -452,13 +454,14 @@ async function handleDm(message) {
   await message.author.send({ embeds: [qEmbed(n, total, qs[n-1])] }).catch(console.error);
 }
 
-/* ---------- command registration ---------- */
+/* ---------- commands ---------- */
 const COMMANDS = [
   new SlashCommandBuilder().setName('tgfpanel').setDescription('Jelentkezési panel').setDMPermission(false),
 
   new SlashCommandBuilder().setName('tierlistadd')
     .setDescription('Játékos hozzáadása a tierlistához')
-    .addStringOption(o => o.setName('player').setDescription('Játékos Discord neve').setRequired(true))
+    .addUserOption(o => o.setName('user').setDescription('Játékos Discord felhasználója').setRequired(true))
+    .addStringOption(o => o.setName('mcname').setDescription('Minecraft felhasználónév').setRequired(true))
     .addStringOption(o => o.setName('rank').setDescription('Rang').setRequired(true)
       .addChoices(
         { name: 'S', value: 'S' }, { name: 'A', value: 'A' },
@@ -513,7 +516,7 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.type === InteractionType.ApplicationCommand) {
       const n = interaction.commandName;
 
-      /* TGFP O  L  A  P */
+      /* TGFPanel */
       if (n === 'tgfpanel') {
         await interaction.reply({
           embeds: [new EmbedBuilder().setColor(0xFF0000)
@@ -536,7 +539,7 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      /* ti.e.r. l. i.s.t */
+      /* Tierlist */
       if (n === 'tierlist') {
         const rank = interaction.options.getString('rank');
         if (rank) {
@@ -549,40 +552,38 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      /* tierlistadd */
+      /* Tierlistadd — DC user + MC name */
       if (n === 'tierlistadd') {
-        const player = interaction.options.getString('player').toLowerCase();
-        const rank   = interaction.options.getString('rank');
-        if (!player || !rank || !RANK_ORDER.includes(rank)) {
-          await interaction.reply({ content: 'Érvényes Discord-nevet és rangot add meg!', ephemeral: true }); return;
+        const uObj    = interaction.options.getUser('user');
+        const mcName  = (interaction.options.getString('mcname') || '').trim();
+        const rank    = interaction.options.getString('rank');
+
+        if (!uObj || !mcName || !rank || !RANK_ORDER.includes(rank)) {
+          await interaction.reply({ content: 'Adj meg egy Discord usert, Minecraft nevet és érvényes rangot!', ephemeral: true }); return;
         }
-        store.tierlist[player] = rank;
+
+        const uid = uObj.id;
+        store.tierlist[uid] = { rank, mcName, discordTag: uObj.tag };
         saveStore();
 
-        // Re-sync embeds first (delete old, post new)
         const ch = interaction.channel;
-        if (ch) {
-          try { await syncTierlistMsgs(ch); }
-          catch(e) { console.error('syncTierlistMsgs error:', e); }
-        }
+        if (ch) { try { await syncTierlistMsgs(ch); } catch(e) { console.error(e); } }
 
         await interaction.reply({
           embeds: [new EmbedBuilder().setColor(0x00FF00)
             .setTitle('Rang hozzáadva')
-            .setDescription(`**${player}** → **${rank}** rangsorhoz adva!\nA tierlista embedek frissítve lettek.`)],
+            .setDescription(`**${uObj.tag}** → **${rank}**\nMC: **${mcName}**\nA tierlista frissítve lett.`)],
         });
         return;
       }
 
-      /* teamcreate */
+      /* Teamcreate — auto-join leader, role-gated */
       if (n === 'teamcreate') {
         const name = interaction.options.getString('name');
 
-        // Channel restriction
         if (interaction.channelId !== TEAM_CREATE_CH) {
           await interaction.reply({ content: 'Ez a parancs csak a csapat-készítő csatornában használható!', ephemeral: true }); return;
         }
-        // Role restriction
         if (!interaction.member?.roles?.cache?.has(TEAM_CREATE_ROLE)) {
           await interaction.reply({ content: 'Nincs jogod csapatot létrehozni!', ephemeral: true }); return;
         }
@@ -591,22 +592,20 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.deferReply();
         try {
           await sendTeamCreate(interaction.channel, name, interaction.user.id);
-          await interaction.followUp(`✅ **${name}** csapat létrehozva!`);
-        } catch(e) {
-          await interaction.followUp(`❌ Hiba: ${e.message}`);
-        }
+          await interaction.followUp(`✅ **${name}** csapat létrehozva! A vezető automatikusan csatlakozott.`);
+        } catch(e) { await interaction.followUp(`❌ Hiba: ${e.message}`); }
         return;
       }
 
-      /* teamdelete — admin only */
+      /* Teamdelete — admin */
       if (n === 'teamdelete') {
         if (!ADMIN_IDS.has(String(interaction.user.id))) {
           await interaction.reply({ content: 'Admin jog szükséges!', ephemeral: true }); return;
         }
-        const name  = interaction.options.getString('name');
-        const team  = store.teams[name];
+        const name = interaction.options.getString('name');
+        const team = store.teams[name];
         if (!team) { await interaction.reply({ content: 'Nem létező csapat.', ephemeral: true }); return; }
-        const pts   = teamPoints(team);
+        const pts  = teamPoints(team);
         delete store.teams[name];
         saveStore();
         await interaction.reply({ embeds: [new EmbedBuilder().setColor(0xFF0000)
@@ -615,7 +614,7 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      /* teamleader — admin only */
+      /* Teamleader — admin */
       if (n === 'teamleader') {
         if (!ADMIN_IDS.has(String(interaction.user.id))) {
           await interaction.reply({ content: 'Admin jog szükséges!', ephemeral: true }); return;
@@ -626,15 +625,12 @@ client.on('interactionCreate', async (interaction) => {
         if (!team) { await interaction.reply({ content: 'Nem létező csapat.', ephemeral: true }); return; }
         if (!user) { await interaction.reply({ content: 'Adj meg egy usert.', ephemeral: true }); return; }
 
-        const oldId = team.leaderId;
         team.leaderId = String(user.id);
         saveStore();
-
-        const oldTag = (client.users.cache.get(oldId) || { tag: oldId }).tag;
         await interaction.reply({
           embeds: [new EmbedBuilder().setColor(0xFF8C00)
             .setTitle('Vezető váltás')
-            .setDescription(`**${name}** konk vezetője: **${user.tag}**\nRégi vezető: ${oldTag}`)],
+            .setDescription(`**${name}** új vezetője: **${user.tag}**`)],
         });
         return;
       }
