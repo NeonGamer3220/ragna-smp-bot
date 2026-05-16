@@ -733,18 +733,59 @@ client.on('interactionCreate', async interaction => {
 
         if (sub === 'start') {
           if (!isAdmin(interaction)) { await interaction.reply({ content: 'Admin jog!', ephemeral: true }); return; }
-          const tName = interaction.options.getString('name');
-          const { data: tourn } = await supabase.from('tournaments').select('*').eq('name', tName).single();
+          const tName  = interaction.options.getString('name');
+          const { data: tourn } = await supabase.from('tournaments').select('current_round').eq('name', tName).single();
           if (!tourn) { await interaction.reply({ content: 'Nem létezik.', ephemeral: true }); return; }
+          const round  = tourn.current_round;
+          const { data: pRows } = await supabase.from('tournament_players').select('player_id').eq('tournament_name', tName).eq('eliminated', false);
+          if (!pRows?.length) { await interaction.reply({ content: 'Nincs élő játékos a tornában.', ephemeral: true }); return; }
 
-          await supabase.from('tournaments').update({ status: 'active' }).eq('name', tName);
-          await interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00FF00).setTitle('Tournament elindítva')
-            .setDescription(`**${tName}** elindítva! A párosítások hamarosan...`)] });
+          let shuffled = [...pRows].sort(() => Math.random() - 0.5);
+          let byeId = null;
+          let autoAdvanceText = '';
 
-          const mId = `tmatch_${tName}_1`;
-          await interaction.channel.send({ components: [new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId(mId).setLabel('Párosítás (Kör 1)').setStyle(ButtonStyle.Primary),
-          )] });
+          if (shuffled.length % 2 === 1) {
+            byeId = shuffled.splice(Math.floor(Math.random() * shuffled.length), 1)[0].player_id;
+            autoAdvanceText = `Automatikusan továbbjutó: <@${byeId}>`;
+          }
+
+          const matches  = [];
+          const matches1 = [];
+          const matchRows = [];
+
+          for (let i = 0; i < shuffled.length; i += 2) {
+            const p1 = shuffled[i].player_id;
+            const p2 = shuffled[i + 1]?.player_id ?? 'BYE';
+            const m  = { tournament_name: tName, round_num: round, player1_id: p1, player2_id: p2 };
+            matches.push(`${p1 === 'BYE' ? '*(bye)*' : `<@${p1}>`} vs ${p2 === 'BYE' ? '*(bye)*' : `<@${p2}>`}`);
+            matches1.push(p1 === 'BYE' ? '*(bye)*' : `<@${p1}>`);
+            matchRows.push(m);
+          }
+
+          await supabase.from('tournament_matches').insert(matchRows);
+
+          if (byeId) {
+            const { data: lastMatch } = await supabase.from('tournament_matches').select('id').eq('tournament_name', tName).eq('round_num', round).eq('player1_id', byeId).single();
+            if (lastMatch) await supabase.from('tournament_matches').update({ winner_id: byeId, played_at: new Date() }).eq('id', lastMatch.id);
+          }
+
+          const matchCount    = matches.length;
+          const totalMatches  = matchCount;
+          const allLines      = [...matches1, ...matches];
+          const descLines     = [
+            `**Összes játékos: ${pRows.length}**`,
+            `**Meccsek száma: ${totalMatches}**`,
+            `${autoAdvanceText ? `**Automatikusan továbbjutó:** ${autoAdvanceText}` : ''}`,
+            `**Meccsek:**`,
+            ...matches.map(l => l),
+            '',
+            '**Ajánlott szerver:** eu.minemen.club',
+            'Sok sikert kívánunk mindenkinek!',
+          ].filter(Boolean);
+
+          await interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00FF00)
+            .setTitle(`**${tName}** Tournament ${round}. Elkezdődött!`)
+            .setDescription(descLines.join('\n'))] });
           return;
         }
 
