@@ -517,6 +517,8 @@ const CMDS = [
     .addSubcommand(sc => sc.setName('eliminate').setDescription('Játékos kizárása (admin)')
       .addStringOption(o => o.setName('name').setDescription('Tournament neve').setRequired(true))
       .addUserOption(o => o.setName('player').setDescription('Játékos').setRequired(true)))
+    .addSubcommand(sc => sc.setName('players').setDescription('Játékosok listája')
+      .addStringOption(o => o.setName('name').setDescription('Tournament neve').setRequired(true)))
     .addSubcommand(sc => sc.setName('start').setDescription('1. kör indítása (admin)')
       .addStringOption(o => o.setName('name').setDescription('Tournament neve').setRequired(true)))
     .addSubcommand(sc => sc.setName('round').setDescription('Kör indítás/lezárása (admin)')
@@ -687,6 +689,43 @@ client.on('interactionCreate', async interaction => {
           await supabase.from('tournament_players').update({ eliminated: true, eliminated_in_round: tourn.current_round, eliminated_at: new Date() }).eq('tournament_name', tName).eq('player_id', pUser.id);
           await interaction.reply({ embeds: [new EmbedBuilder().setColor(0xFF0000).setTitle('Kizárva')
             .setDescription(`**${pUser.tag}** kizárva a **${tName}** tornából a **${tourn.current_round}. körben**.`)] });
+          return;
+        }
+
+        if (sub === 'players') {
+          const tName = interaction.options.getString('name');
+          const { data: tourn } = await supabase.from('tournaments').select('*').eq('name', tName).single();
+          if (!tourn) { await interaction.reply({ content: 'Nem létezik a tournament.', ephemeral: true }); return; }
+
+          const { data: players } = await supabase.from('tournament_players')
+            .select('player_id, eliminated, eliminated_in_round')
+            .eq('tournament_name', tName)
+            .order('eliminated', { ascending: true });
+
+          if (!players?.length) { await interaction.reply({ content: 'Nincs játékos a tornában.', ephemeral: true }); return; }
+
+          const alive  = players.filter(p => !p.eliminated);
+          const elim   = players.filter(p => p.eliminated);
+          const lines  = [];
+
+          if (alive.length) {
+            lines.push('**Élben maradt játékosok:**');
+            for (const p of alive) {
+              const u = await client.users.fetch(p.player_id).catch(() => ({ tag: p.player_id }));
+              lines.push(`${u.tag}`);
+            }
+          }
+          if (elim.length) {
+            lines.push('\n**Kiesett játékosok:**');
+            for (const p of elim) {
+              const u = await client.users.fetch(p.player_id).catch(() => ({ tag: p.player_id }));
+              lines.push(`${u.tag} — ${p.eliminated_in_round}. körben esett ki`);
+            }
+          }
+
+          await interaction.reply({ embeds: [new EmbedBuilder().setColor(0xFF4500)
+            .setTitle(`${tName} — ${players.length} játékos`)
+            .setDescription(lines.join('\n'))] });
           return;
         }
 
