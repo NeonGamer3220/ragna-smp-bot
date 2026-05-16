@@ -784,7 +784,7 @@ client.on('interactionCreate', async interaction => {
           ].filter(Boolean);
 
           await interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00FF00)
-            .setTitle(`**${tName}** Tournament ${round}. Elkezdődött!`)
+            .setTitle(`**${tName}** Tournament ${round}. Köre Elkezdődött!`)
             .setDescription(descLines.join('\n'))] });
           return;
         }
