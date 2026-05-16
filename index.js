@@ -278,86 +278,129 @@ async function handleBtn(interaction) {
 
   /* ── Tournament: generate matches ── */
   if (c.startsWith('tmatch_')) {
-    // tmatch_<tournamentName>_<round>
     const rest   = c.slice(7);
     const idx    = rest.lastIndexOf('_');
     const tName  = rest.substring(0, idx);
     const round  = parseInt(rest.substring(idx + 1), 10);
 
-    const { data: players } = await supabase.from('tournament_players').select('*').eq('tournament_name', tName).eq('eliminated', false);
+    const { data: players } = await supabase.from('tournament_players').select('player_id').eq('tournament_name', tName).eq('eliminated', false);
     if (!players?.length) { await interaction.reply({ content: 'Nincs játékos a versenyben!', ephemeral: true }); return; }
 
-    // Shuffle
-    const shuffled = players.sort(() => Math.random() - 0.5);
+    // Shuffle & pair
+    const shuffled = [...players].sort(() => Math.random() - 0.5);
     const matches  = [];
     for (let i = 0; i < shuffled.length; i += 2) {
-      const p1 = shuffled[i].player_id;
-      const p2 = shuffled[i + 1]?.player_id || null;
-      matches.push({ tournament_name: tName, round_num: round, player1_id: p1, player2_id: p2 });
+      matches.push({
+        tournament_name: tName,
+        round_num:       round,
+        player1_id:      shuffled[i].player_id,
+        player2_id:      shuffled[i + 1]?.player_id || null,
+      });
     }
-
     await supabase.from('tournament_matches').insert(matches);
-    await interaction.reply({ embeds: [new EmbedBuilder().setColor(0xFF0000).setTitle('Párosítások')
-      .setDescription(matches.map((m, i) => `**${i+1}.** <@${m.player1_id}> vs ${m.player2_id ? `<@${m.player2_id}>` : '*(bye)*'}`).join('\n'))] });
+
+    // Disable the generating button
+    await interaction.message.edit({ components: [disBtns()] }).catch(() => {});
+
+    // Send match table as follow-up message
+    const lines = matches.map(m => {
+      const tag1 = `<@${m.player1_id}>`;
+      const tag2 = m.player2_id ? `<@${m.player2_id}>` : '*(bye)*';
+      return `**M${matches.indexOf(m)+1}.** ${tag1} vs ${tag2}`;
+    });
+
+    // Send winner buttons — one row per match
+    const btnRows = matches.map(m => new ActionRowBuilder().addComponents(
+      ...(m.player2_id
+        ? [
+            new ButtonBuilder().setCustomId(`tw_${m.id}_${m.player1_id}`).setLabel(`✅ <@${m.player1_id}> nyer?`).setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId(`tw_${m.id}_${m.player2_id}`).setLabel(`✅ <@${m.player2_id}> nyer?`).setStyle(ButtonStyle.Success),
+          ]
+        : [
+            new ButtonBuilder().setCustomId(`tw_${m.id}_${m.player1_id}`).setLabel(`🏆 <@${m.player1_id}> (bye)`).setStyle(ButtonStyle.Primary),
+          ]
+      ),
+    ));
+
+    await interaction.followUp({
+      embeds: [new EmbedBuilder().setColor(0xFF4500).setTitle(`${tName} — ${round}. kör`).setDescription(lines.join('\n'))],
+      components: btnRows,
+    }).catch(console.error);
     return;
   }
 
   /* ── Tournament: record winner ── */
-  if (c.startsWith('twin_')) {
-    const parts  = c.split('_');
-    const tName  = parts[1];
-    const round  = parseInt(parts[2], 10);
-    const matchId = parseInt(parts[3], 10);
+  if (c.startsWith('tw_')) {
+    // tw_<matchId>_<winnerDiscordId>
+    const parts   = c.split('_');
+    const matchId = parseInt(parts[1], 10);
+    const winnerId  = c.slice(parts[1].length + 3); // everything after "tw_<matchId>_"
 
-    const { data: match } = await supabase.from('tournament_matches').select('*').eq('id', matchId).single();
+     const { data: match } = await supabase.from('tournament_matches').select('*').eq('id', matchId).single();
     if (!match) { await interaction.reply({ content: 'Pár nem található.', ephemeral: true }); return; }
+    if (match.winner_id) {
+      await interaction.reply({ content: 'Ez a mérkőzés már döntetlen!', ephemeral: true }); return;
+    }
 
-    // User selects XY from player1_id or player2_id
-    // Format: twin_<tournament>_<round>_<matchId>_<playerId>
-    const winnerId = parts.length > 4 ? parts.slice(4).join('') : match.player1_id;
+    const tName = match.tournament_name;
+    const round = match.round_num;
+    const loserId = winnerId === match.player1_id ? match.player2_id : match.player1_id;
 
-    await supabase.from('tournament_matches').update({ winner_id: winnerId, played_at: new Date() }).eq('id', matchId);
+    // Record winner
+    const { error: wErr } = await supabase.from('tournament_matches')
+      .update({ winner_id: winnerId, played_at: new Date() }).eq('id', matchId);
+    if (wErr) { console.error('Winner update:', wErr.message); }
 
     // Eliminate loser
-    const loserId = winnerId === match.player1_id ? match.player2_id : match.player1_id;
     if (loserId) {
-      const nextRound = round + 1;
-      // find next round for winner to advance — advance by promoting to next round's match
-      const { data: nextMatches } = await supabase.from('tournament_matches').select('*')
-        .eq('tournament_name', tName).eq('round_num', nextRound);
-      // simple: mark eliminated in current round
-      await supabase.from('tournament_players').update({ eliminated: true, eliminated_in_round: round, eliminated_at: new Date() }).eq('tournament_name', tName).eq('player_id', loserId);
+      await supabase.from('tournament_players').update({
+        eliminated: true, eliminated_in_round: round, eliminated_at: new Date(),
+      }).eq('tournament_name', tName).eq('player_id', loserId);
     }
 
-    // Check if round done
-    const { data: allMatches } = await supabase.from('tournament_matches').select('*').eq('tournament_name', tName).eq('round_num', round);
-    const allDone = allMatches.every(m => m.winner_id);
-    if (allDone) {
-      await supabase.from('tournament_rounds').update({ status: 'done', ended_at: new Date() }).eq('tournament_name', tName).eq('round_num', round);
-      // Count remaining
-      const { data: alive } = await supabase.from('tournament_players').select('player_id').eq('tournament_name', tName).eq('eliminated', false);
-      if (alive?.length === 1) {
-        // Winner!
-        const winId = alive[0].player_id;
-        await supabase.from('tournaments').update({ status: 'finished', winner_id: winId, ended_at: new Date() }).eq('name', tName);
-        const winnerUser = await client.users.fetch(winId).catch(() => ({ tag: winId }));
-        const { data: elimData } = await supabase.from('tournament_players').select('player_id, eliminated_in_round').eq('tournament_name', tName).eq('eliminated', true);
-        const elimLines = (elimData || []).map(e => {
-          const u = client.users.cache.get(e.player_id) || client.users.cache.get(e.player_id);
-          const tag = u?.tag || e.player_id;
-          return `${tag} — ${e.eliminated_in_round}. körben esett ki`;
-        }).join('\n') || '*Senki sem esett ki (csak egy játékos volt).*';
+    await interaction.reply({ content: `✅ <@${winnerId}> nyert ezt a mérkőzést! (${tName} – ${round}. kör)` }).catch(() => {});
 
-        await interaction.channel.send({ embeds: [new EmbedBuilder().setColor(0xFFD700)
-          .setTitle(`🏆 ${tName} — Győztes: ${winnerUser.tag}!`)
-          .setDescription(`**${winnerUser.tag}** nyert!\n\n**Kiesések:**\n${elimLines}`)] });
-      } else if (alive?.length > 1) {
-        // next round
-        await supabase.from('tournament_rounds').insert({ tournament_name: tName, round_num: round + 1, status: 'pending' });
-        await supabase.from('tournaments').update({ current_round: round + 1 }).eq('name', tName);
-      }
+    // Check if round is fully played
+    const { data: allMatches } = await supabase.from('tournament_matches')
+      .select('winner_id').eq('tournament_name', tName).eq('round_num', round);
+    const allDone = (allMatches || []).every(m => !!m.winner_id);
+    if (!allDone) return;
+
+    await supabase.from('tournament_rounds')
+      .update({ status: 'done', ended_at: new Date() })
+      .eq('tournament_name', tName).eq('round_num', round);
+
+    const { data: alive } = await supabase.from('tournament_players')
+      .select('player_id').eq('tournament_name', tName).eq('eliminated', false);
+
+    if (alive?.length === 1) {
+      // ── GYŐZTES ──
+      const winId = alive[0].player_id;
+      await supabase.from('tournaments')
+        .update({ status: 'finished', winner_id: winId, ended_at: new Date() }).eq('name', tName);
+
+      const winUser = await client.users.fetch(winId).catch(() => ({ tag: winId }));
+      const { data: elims } = await supabase.from('tournament_players')
+        .select('player_id, eliminated_in_round').eq('tournament_name', tName).eq('eliminated', true);
+
+      const elimLines = (elims || []).map(e => {
+        const u = client.users.cache.get(e.player_id);
+        return `${u?.tag || e.player_id} — ${e.eliminated_in_round}. körben esett ki`;
+      }).join('\n') || '*Senki sem esett ki (csak 1 játékos volt).*';
+
+      await interaction.channel.send({ embeds: [new EmbedBuilder()
+        .setColor(0xFFD700)
+        .setTitle(`🏆 ${tName} — Győztes: ${winUser.tag}!`)
+        .setDescription(`**${winUser.tag}** nyert a **${tName}** tornán!\n\n**Kiesések:**\n${elimLines}`)] });
+    } else if (alive?.length > 1) {
+      // ── Next round ──
+      const nr = round + 1;
+      await supabase.from('tournament_rounds').insert({ tournament_name: tName, round_num: nr, status: 'pending' });
+      await supabase.from('tournaments').update({ current_round: nr }).eq('name', tName);
+      await interaction.channel.send({ embeds: [new EmbedBuilder().setColor(0x00FF00)
+        .setTitle(`${tName}`)
+        .setDescription(`A **${nr}. kör** hamarosan!`)] });
     }
-    await interaction.reply({ content: `✅ <@${winnerId}> nyert ezt a mérkőzést!`, ephemeral: false }).catch(() => {});
     return;
   }
 
@@ -459,13 +502,22 @@ const CMDS = [
     .addUserOption(o => o.setName('user').setDescription('Új vezető').setRequired(true)),
 
   /* ─── Tournament ─── */
-  new SlashCommandBuilder().setName('tournament')
-    .setDescription('Tournament kezelés')
-    .addSubCommand(sc => sc.setName('create').setDescription('Új tournament létrehozása (admin)').addStringOption(o => o.setName('name').setDescription('Tournament neve').setRequired(true)))
-    .addSubCommand(sc => sc.setName('add').setDescription('Játékos hozzáadása (admin)').addStringOption(o => o.setName('name').setDescription('Tournament neve').setRequired(true)).addUserOption(o => o.setName('player').setDescription('Játékos').setRequired(true)))
-    .addSubCommand(sc => sc.setName('eliminate').setDescription('Játékos kizárása (admin)').addStringOption(o => o.setName('name').setDescription('Tournament neve').setRequired(true)).addUserOption(o => o.setName('player').setDescription('Játékos').setRequired(true)))
-    .addSubCommand(sc => sc.setName('start').setDescription('1. kör indítása (admin)').addStringOption(o => o.setName('name').setDescription('Tournament neve').setRequired(true)))
-    .addSubCommand(sc => sc.setName('round').setDescription('Kör indítás/lezárása').addStringOption(o => o.setName('name').setDescription('Tournament neve').setRequired(true)).addIntegerOption(o => o.setName('round').setDescription('Kör száma').setRequired(true)).addStringOption(o => o.setName('action').setDescription('start/stop').setRequired(true).addChoices({ name:'start',value:'start' },{ name:'stop',value:'stop' }))),
+  new SlashCommandBuilder().setName('tournament').setDescription('Tournament kezelés')
+    .addSubcommand(sc => sc.setName('create').setDescription('Új tournament létrehozása (admin)')
+      .addStringOption(o => o.setName('name').setDescription('Tournament neve').setRequired(true)))
+    .addSubcommand(sc => sc.setName('add').setDescription('Játékos hozzáadása (admin)')
+      .addStringOption(o => o.setName('name').setDescription('Tournament neve').setRequired(true))
+      .addUserOption(o => o.setName('player').setDescription('Játékos').setRequired(true)))
+    .addSubcommand(sc => sc.setName('eliminate').setDescription('Játékos kizárása (admin)')
+      .addStringOption(o => o.setName('name').setDescription('Tournament neve').setRequired(true))
+      .addUserOption(o => o.setName('player').setDescription('Játékos').setRequired(true)))
+    .addSubcommand(sc => sc.setName('start').setDescription('1. kör indítása (admin)')
+      .addStringOption(o => o.setName('name').setDescription('Tournament neve').setRequired(true)))
+    .addSubcommand(sc => sc.setName('round').setDescription('Kör indítás/lezárása (admin)')
+      .addStringOption(o => o.setName('name').setDescription('Tournament neve').setRequired(true))
+      .addIntegerOption(o => o.setName('round').setDescription('Kör száma').setRequired(true))
+      .addStringOption(o => o.setName('action').setDescription('start/stop').setRequired(true)
+        .addChoices({ name:'start',value:'start' }, { name:'stop',value:'stop' }))),
 ];
 
 async function regCmds() {
