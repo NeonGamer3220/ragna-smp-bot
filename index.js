@@ -196,7 +196,7 @@ async function handleBtn(interaction) {
   if (c === '_x_') { await interaction.deferUpdate(); return; }
 
   /* ── TGFPanel ── */
-  if (c === 'apply_smp' || c === 'apply_staff') {
+   if (c === 'apply_smp' || c === 'apply_staff') {
     const type = c === 'apply_smp' ? 'smp' : 'staff';
     try {
       const dm = await interaction.user.createDM();
@@ -206,13 +206,6 @@ async function handleBtn(interaction) {
     return;
   }
 
-  /* ── Tierlist reload ── */
-  if (c === 'tierlist_reload') {
-    await interaction.deferReply({ ephemeral: true });
-    await syncTierlist(interaction.channel);
-    await interaction.editReply({ content: '✅ Tierlista frissítve!' });
-    return;
-  }
 
   /* ── Team join ── */
   if (c.startsWith('tj_')) {
@@ -508,6 +501,12 @@ const CMDS = [
     .addStringOption(o => o.setName('name').setDescription('Csapat neve').setRequired(true))
     .addUserOption(o => o.setName('user').setDescription('Új vezető').setRequired(true)),
 
+  new SlashCommandBuilder().setName('sendtgf')
+    .setDescription('Jelentkezési kérdések elküldése egy játékosnak (admin)')
+    .addUserOption(o => o.setName('user').setDescription('Játékos Discord felhasználó').setRequired(true))
+    .addStringOption(o => o.setName('type').setDescription('Jelentkezés típusa').setRequired(true)
+      .addChoices({ name:'SMP Tag',value:'smp' }, { name:'Staff',value:'staff' })),
+
   /* ─── Tournament ─── */
   new SlashCommandBuilder().setName('tournament').setDescription('Tournament kezelés')
     .addSubcommand(sc => sc.setName('create').setDescription('Új tournament létrehozása (admin)')
@@ -555,6 +554,19 @@ client.on('interactionCreate', async interaction => {
             new ButtonBuilder().setCustomId('apply_smp').setLabel('SMP Tag').setStyle(ButtonStyle.Primary),
             new ButtonBuilder().setCustomId('apply_staff').setLabel('Staff').setStyle(ButtonStyle.Primary),
           )] });
+        return;
+      }
+
+      /* SendTGF — admin: trigger application flow for another player */
+      if (n === 'sendtgf') {
+        if (!isAdmin(interaction)) { await interaction.reply({ content: 'Admin jog!', ephemeral: true }); return; }
+        const tUser  = interaction.options.getUser('user');
+        const type   = interaction.options.getString('type');
+        if (!tUser || !type) { await interaction.reply({ content: 'Adj meg egy usert és típust (SMP Tag / Staff)!', ephemeral: true }); return; }
+        const dm = await tUser.createDM().catch(() => null);
+        if (!dm) { await interaction.reply({ content: 'Nem sikerült megnyitni a DM-et a játékosnak!', ephemeral: true }); return; }
+        await startApp(dm, tUser.id, type);
+        await interaction.reply({ content: `✅ Kérdések elküldve **${tUser.tag}** DM-jéba (**${type === 'smp' ? 'SMP Tag' : 'Staff'}** folyamat).` });
         return;
       }
 
