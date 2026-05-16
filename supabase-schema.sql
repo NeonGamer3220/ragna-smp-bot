@@ -1,10 +1,20 @@
 -- ============================================================
---  Ragna SMP Bot — Supabase schema  (sorban lefuttatható)
---  Másold be a Supabase SQL Editorba és nyomj Run
+--  Ragna SMP Bot — Supabase schema (teljes újrabuild, idempotens)
+--  Másold be a Supabase SQL Editorba → Run
 -- ============================================================
 
--- 1. Tierlista
-create table if not exists tierlist (
+-- ==== 0. Régi séma megtisztítása ====
+drop policy if exists "anon all" on tierlist;           drop table if exists tierlist cascade;
+drop policy if exists "anon all" on teams;              drop table if exists teams cascade;
+drop table if exists  team_members cascade;
+drop table if exists  team_queue cascade;
+drop policy if exists "anon all" on tournaments;        drop table if exists tournaments cascade;
+drop table if exists  tournament_players cascade;
+drop table if exists  tournament_rounds cascade;
+drop table if exists  tournament_matches cascade;
+
+-- ==== 1. Tierlista ====
+create table tierlist (
   id         bigint generated always as identity primary key,
   discord_id text not null unique,
   username   text not null,
@@ -13,15 +23,15 @@ create table if not exists tierlist (
   created_at timestamptz default now()
 );
 
--- 2. Csapatok
-create table if not exists teams (
+-- ==== 2. Csapatok ====
+create table teams (
   id         bigint generated always as identity primary key,
   name       text not null unique,
   leader_id  text not null,
   created_at timestamptz default now()
 );
 
-create table if not exists team_members (
+create table team_members (
   id         bigint generated always as identity primary key,
   team_name  text not null,
   player_id  text not null,
@@ -31,7 +41,7 @@ create table if not exists team_members (
   foreign key (team_name) references teams(name) on delete cascade
 );
 
-create table if not exists team_queue (
+create table team_queue (
   id           bigint generated always as identity primary key,
   team_name    text not null,
   player_id    text not null,
@@ -40,8 +50,8 @@ create table if not exists team_queue (
   foreign key (team_name) references teams(name) on delete cascade
 );
 
--- 3. Tournament
-create table if not exists tournaments (
+-- ==== 3. Tournament ====
+create table tournaments (
   id            bigint generated always as identity primary key,
   name          text not null unique,
   created_by    text not null,
@@ -52,7 +62,7 @@ create table if not exists tournaments (
   ended_at      timestamptz
 );
 
-create table if not exists tournament_players (
+create table tournament_players (
   id               bigint generated always as identity primary key,
   tournament_name  text not null,
   player_id        text not null,
@@ -63,7 +73,7 @@ create table if not exists tournament_players (
   foreign key (tournament_name) references tournaments(name) on delete cascade
 );
 
-create table if not exists tournament_rounds (
+create table tournament_rounds (
   id              bigint generated always as identity primary key,
   tournament_name text not null,
   round_num       int not null,
@@ -74,7 +84,7 @@ create table if not exists tournament_rounds (
   foreign key (tournament_name) references tournaments(name) on delete cascade
 );
 
-create table if not exists tournament_matches (
+create table tournament_matches (
   id              bigint generated always as identity primary key,
   tournament_name text not null,
   round_num       int not null,
@@ -86,7 +96,7 @@ create table if not exists tournament_matches (
   foreign key (tournament_name) references tournaments(name) on delete cascade
 );
 
--- 4. RLS + Policies
+-- ==== 4. RLS ====
 alter table tierlist            enable row level security;
 alter table teams               enable row level security;
 alter table team_members        enable row level security;
@@ -95,15 +105,6 @@ alter table tournaments         enable row level security;
 alter table tournament_players  enable row level security;
 alter table tournament_rounds   enable row level security;
 alter table tournament_matches  enable row level security;
-
-drop policy if exists "anon all" on tierlist;
-drop policy if exists "anon all" on teams;
-drop policy if exists "anon all" on team_members;
-drop policy if exists "anon all" on team_queue;
-drop policy if exists "anon all" on tournaments;
-drop policy if exists "anon all" on tournament_players;
-drop policy if exists "anon all" on tournament_rounds;
-drop policy if exists "anon all" on tournament_matches;
 
 create policy "anon all" on tierlist           for all using (true) with check (true);
 create policy "anon all" on teams              for all using (true) with check (true);
@@ -114,11 +115,11 @@ create policy "anon all" on tournament_players for all using (true) with check (
 create policy "anon all" on tournament_rounds  for all using (true) with check (true);
 create policy "anon all" on tournament_matches for all using (true) with check (true);
 
--- 5. Indexek
-create index if not exists idx_tierlist_tier    on tierlist(tier);
-create index if not exists idx_team_mem_team   on team_members(team_name);
-create index if not exists idx_team_q_team     on team_queue(team_name);
-create index if not exists idx_tp_tourn        on tournament_players(tournament_name);
-create index if not exists idx_tp_elim         on tournament_players(tournament_name, eliminated);
-create index if not exists idx_tr_tourn        on tournament_rounds(tournament_name);
-create index if not exists idx_tm_tourn        on tournament_matches(tournament_name);
+-- ==== 5. Indexek ====
+create index idx_tierlist_tier    on tierlist(tier);
+create index idx_team_mem_team    on team_members(team_name);
+create index idx_team_q_team      on team_queue(team_name);
+create index idx_tplayers_tourn   on tournament_players(tournament_name);
+create index idx_tplayers_elim    on tournament_players(tournament_name, eliminated);
+create index idx_trounds_tourn    on tournament_rounds(tournament_name);
+create index idx_tmatches_tourn   on tournament_matches(tournament_name);
