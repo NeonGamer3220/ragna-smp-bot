@@ -521,6 +521,8 @@ const CMDS = [
       .addStringOption(o => o.setName('name').setDescription('Tournament neve').setRequired(true)))
     .addSubcommand(sc => sc.setName('start').setDescription('1. kör indítása (admin)')
       .addStringOption(o => o.setName('name').setDescription('Tournament neve').setRequired(true)))
+    .addSubcommand(sc => sc.setName('message').setDescription('Üzenet küldése a csatornára (admin)')
+      .addStringOption(o => o.setName('text').setDescription('Üzenet szövege').setRequired(true)))
     .addSubcommand(sc => sc.setName('round').setDescription('Kör indítás/lezárása (admin)')
       .addStringOption(o => o.setName('name').setDescription('Tournament neve').setRequired(true))
       .addIntegerOption(o => o.setName('round').setDescription('Kör száma').setRequired(true))
@@ -762,6 +764,14 @@ client.on('interactionCreate', async interaction => {
             await supabase.from('tournament_rounds').update({ status: 'done', ended_at: new Date() }).eq('tournament_name', tName).eq('round_num', round);
             await interaction.reply({ embeds: [new EmbedBuilder().setColor(0xFF8C00).setTitle(`${tName} — ${round}. kör lezárva!`)] });
           }
+          return;
+        }
+
+        if (sub === 'message') {
+          if (!isAdmin(interaction)) { await interaction.reply({ content: 'Admin jog!', ephemeral: true }); return; }
+          const text = interaction.options.getString('text');
+          await interaction.channel.send(text);
+          await interaction.reply({ content: '✅ Üzenet elküldve.', ephemeral: true });
           return;
         }
       }
