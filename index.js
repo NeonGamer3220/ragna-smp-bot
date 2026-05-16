@@ -561,15 +561,17 @@ client.on('interactionCreate', async (interaction) => {
         if (!player || !rank || !RANK_ORDER.includes(rank)) {
           await interaction.reply({ content: 'Érvényes játékosnévet és rangot add meg!', ephemeral: true }); return;
         }
-        const targetUser = interaction.options.getString('player');
-        store.tierlist[targetUser] = rank;
+        store.tierlist[player] = rank;
         saveStore();
         await interaction.reply({
           embeds: [new EmbedBuilder().setColor(0x00FF00)
             .setTitle('Rang hozzáadva')
-            .setDescription(`**${targetUser}** → **${rank}** rangsorhoz adva!`)],
+            .setDescription(`**${player}** → **${rank}** rangsorhoz adva!`)],
           ephemeral: true,
         });
+        // Re-sync embeds into the tierlist channel
+        const tlCh = interaction.channel;
+        if (tlCh) { await syncTierlistMsgs(tlCh).catch(console.error); }
         return;
       }
 
