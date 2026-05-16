@@ -14,9 +14,11 @@ const client = new Client({
 });
 
 /* ---------- env ---------- */
-const GUILD_ID       = process.env.GUILD_ID;
-const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID || '1504913411010461938';
-const ADMIN_IDS      = new Set(
+const GUILD_ID          = process.env.GUILD_ID;
+const LOG_CHANNEL_ID    = process.env.LOG_CHANNEL_ID || '1504913411010461938';
+const TEAM_CREATE_CH    = process.env.TEAM_CREATE_CH  || '1505117200522936380';
+const TEAM_CREATE_ROLE  = process.env.TEAM_CREATE_ROLE || '1504866162713039002';
+const ADMIN_IDS         = new Set(
   (process.env.ADMIN_IDS || '').split(',').map(s => s.trim()).filter(Boolean)
 );
 const DATA_FILE      = path.join(__dirname, 'data.json');
@@ -574,6 +576,16 @@ client.on('interactionCreate', async (interaction) => {
       /* teamcreate */
       if (n === 'teamcreate') {
         const name = interaction.options.getString('name');
+
+        // Channel restriction
+        if (interaction.channelId !== TEAM_CREATE_CH) {
+          await interaction.reply({ content: 'Ez a parancs csak a csapat-készítő csatornában használható!', ephemeral: true }); return;
+        }
+        // Role restriction
+        if (!interaction.member?.roles?.cache?.has(TEAM_CREATE_ROLE)) {
+          await interaction.reply({ content: 'Nincs jogod csapatot létrehozni!', ephemeral: true }); return;
+        }
+
         if (store.teams[name]) { await interaction.reply({ content: 'Ez a csapatnév már létezik!', ephemeral: true }); return; }
         await interaction.deferReply();
         try {
