@@ -15,13 +15,20 @@ const client = new Client({
 });
 
 /* ---------- env ---------- */
-const GUILD_ID          = process.env.GUILD_ID;
-const LOG_CHANNEL_ID    = process.env.LOG_CHANNEL_ID || '1504913411010461938';
-const TEAM_CREATE_CH    = process.env.TEAM_CREATE_CH  || '1505117200522936380';
-const TEAM_CREATE_ROLE  = process.env.TEAM_CREATE_ROLE || '1504866162713039002';
-const ADMIN_IDS         = new Set(
+const GUILD_ID             = process.env.GUILD_ID;
+const LOG_CHANNEL_ID       = process.env.LOG_CHANNEL_ID      || '1504913411010461938';
+const TEAM_CREATE_CH       = process.env.TEAM_CREATE_CH      || '1505117200522936380';
+const TEAM_CREATE_ROLE     = process.env.TEAM_CREATE_ROLE    || '1504866162713039002';
+const SUPERADMIN_ROLE      = process.env.SUPERADMIN_ROLE     || '1481717940142215318';
+const ADMIN_IDS            = new Set(
   (process.env.ADMIN_IDS || '').split(',').map(s => s.trim()).filter(Boolean)
 );
+
+function isAdmin(interaction) {
+  if (ADMIN_IDS.has(String(interaction.user.id))) return true;
+  const roles = interaction.member?.roles?.cache;
+  return roles ? roles.has(SUPERADMIN_ROLE) : false;
+}
 const SUPABASE_URL      = process.env.SUPABASE_URL;
 const SUPABASE_KEY      = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_KEY;
 const DATA_FILE         = path.join(__dirname, 'data.json');
@@ -245,7 +252,7 @@ async function handleBtn(interaction) {
     const name  = c.slice(3);
     const { data: team } = await supabase.from('teams').select('*').eq('name', name).single();
     if (!team) return;
-    if (String(interaction.user.id) !== team.leader_id && !ADMIN_IDS.has(String(interaction.user.id))) {
+    if (String(interaction.user.id) !== team.leader_id && !isAdmin(interaction)) {
       await interaction.reply({ content: 'Csak a vezető vagy admin csinálhatja!', ephemeral: true }); return;
     }
     const { data: qEntry } = await supabase.from('team_queue').select('*').eq('team_name', name).order('requested_at', { ascending: true }).limit(1).maybeSingle();
@@ -265,7 +272,7 @@ async function handleBtn(interaction) {
     const name = c.slice(3);
     const { data: team } = await supabase.from('teams').select('*').eq('name', name).single();
     if (!team) return;
-    if (String(interaction.user.id) !== team.leader_id && !ADMIN_IDS.has(String(interaction.user.id))) {
+    if (String(interaction.user.id) !== team.leader_id && !isAdmin(interaction)) {
       await interaction.reply({ content: 'Csak a vezető vagy admin csinálhatja!', ephemeral: true }); return;
     }
     const { data: qEntry } = await supabase.from('team_queue').select('id').eq('team_name', name).order('requested_at', { ascending: true }).limit(1).maybeSingle();
@@ -605,7 +612,7 @@ client.on('interactionCreate', async interaction => {
 
       /* Teamdelete */
       if (n === 'teamdelete') {
-        if (!ADMIN_IDS.has(String(interaction.user.id))) { await interaction.reply({ content: 'Admin jog!', ephemeral: true }); return; }
+        if (!isAdmin(interaction)) { await interaction.reply({ content: 'Admin jog!', ephemeral: true }); return; }
         const name = interaction.options.getString('name');
         const { data: team } = await supabase.from('teams').select('*').eq('name', name).single();
         if (!team) { await interaction.reply({ content: 'Nem létezik.', ephemeral: true }); return; }
@@ -618,7 +625,7 @@ client.on('interactionCreate', async interaction => {
 
       /* Teamleader */
       if (n === 'teamleader') {
-        if (!ADMIN_IDS.has(String(interaction.user.id))) { await interaction.reply({ content: 'Admin jog!', ephemeral: true }); return; }
+        if (!isAdmin(interaction)) { await interaction.reply({ content: 'Admin jog!', ephemeral: true }); return; }
         const name = interaction.options.getString('name');
         const user = interaction.options.getUser('user');
         const { data: team } = await supabase.from('teams').select('*').eq('name', name).single();
@@ -635,7 +642,7 @@ client.on('interactionCreate', async interaction => {
         const sub = interaction.options.getSubcommand();
 
         if (sub === 'create') {
-          if (!ADMIN_IDS.has(String(interaction.user.id))) { await interaction.reply({ content: 'Admin jog!', ephemeral: true }); return; }
+          if (!isAdmin(interaction)) { await interaction.reply({ content: 'Admin jog!', ephemeral: true }); return; }
           const tName = interaction.options.getString('name');
           const { data: existing } = await supabase.from('tournaments').select('name').eq('name', tName).maybeSingle();
           if (existing) { await interaction.reply({ content: 'Már létezik ilyen nevű tournament!', ephemeral: true }); return; }
@@ -646,7 +653,7 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (sub === 'add') {
-          if (!ADMIN_IDS.has(String(interaction.user.id))) { await interaction.reply({ content: 'Admin jog!', ephemeral: true }); return; }
+          if (!isAdmin(interaction)) { await interaction.reply({ content: 'Admin jog!', ephemeral: true }); return; }
           const tName   = interaction.options.getString('name');
           const pUser   = interaction.options.getUser('player');
           const { data: tourn } = await supabase.from('tournaments').select('*').eq('name', tName).single();
@@ -659,7 +666,7 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (sub === 'eliminate') {
-          if (!ADMIN_IDS.has(String(interaction.user.id))) { await interaction.reply({ content: 'Admin jog!', ephemeral: true }); return; }
+          if (!isAdmin(interaction)) { await interaction.reply({ content: 'Admin jog!', ephemeral: true }); return; }
           const tName = interaction.options.getString('name');
           const pUser  = interaction.options.getUser('player');
           const { data: tourn } = await supabase.from('tournaments').select('*').eq('name', tName).single();
@@ -672,7 +679,7 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (sub === 'start') {
-          if (!ADMIN_IDS.has(String(interaction.user.id))) { await interaction.reply({ content: 'Admin jog!', ephemeral: true }); return; }
+          if (!isAdmin(interaction)) { await interaction.reply({ content: 'Admin jog!', ephemeral: true }); return; }
           const tName = interaction.options.getString('name');
           const { data: tourn } = await supabase.from('tournaments').select('*').eq('name', tName).single();
           if (!tourn) { await interaction.reply({ content: 'Nem létezik.', ephemeral: true }); return; }
@@ -689,7 +696,7 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (sub === 'round') {
-          if (!ADMIN_IDS.has(String(interaction.user.id))) { await interaction.reply({ content: 'Admin jog!', ephemeral: true }); return; }
+          if (!isAdmin(interaction)) { await interaction.reply({ content: 'Admin jog!', ephemeral: true }); return; }
           const tName = interaction.options.getString('name');
           const round = interaction.options.getInteger('round');
           const act   = interaction.options.getString('action');
