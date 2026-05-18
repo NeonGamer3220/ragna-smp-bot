@@ -799,8 +799,56 @@ client.on('interactionCreate', async interaction => {
           if (!tourn) { await interaction.reply({ content: 'Nem létezik.', ephemeral: true }); return; }
 
           if (act === 'start') {
+            const { data: pRows } = await supabase.from('tournament_players').select('player_id').eq('tournament_name', tName).eq('eliminated', false);
+            if (!pRows?.length) { await interaction.reply({ content: 'Nincs élő játékos a tornában.', ephemeral: true }); return; }
+
+            let shuffled = [...pRows].sort(() => Math.random() - 0.5);
+            let byeId = null;
+            let autoAdvanceText = '';
+
+            if (shuffled.length % 2 === 1) {
+              byeId = shuffled.splice(Math.floor(Math.random() * shuffled.length), 1)[0].player_id;
+              autoAdvanceText = `Automatikusan továbbjutó: <@${byeId}>`;
+            }
+
+            const matches  = [];
+            const matches1 = [];
+            const matchRows = [];
+
+            for (let i = 0; i < shuffled.length; i += 2) {
+              const p1 = shuffled[i].player_id;
+              const p2 = shuffled[i + 1]?.player_id ?? 'BYE';
+              const m  = { tournament_name: tName, round_num: round, player1_id: p1, player2_id: p2 };
+              matches.push(`${p1 === 'BYE' ? '*(bye)*' : `<@${p1}>`} vs ${p2 === 'BYE' ? '*(bye)*' : `<@${p2}>`}`);
+              matches1.push(p1 === 'BYE' ? '*(bye)*' : `<@${p1}>`);
+              matchRows.push(m);
+            }
+
+            await supabase.from('tournament_matches').insert(matchRows);
             await supabase.from('tournament_rounds').update({ status: 'active', started_at: new Date() }).eq('tournament_name', tName).eq('round_num', round);
-            await interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00FF00).setTitle(`${tName} — ${round}. kör indítva!`)] });
+
+            if (byeId) {
+              const { data: lastMatch } = await supabase.from('tournament_matches').select('id').eq('tournament_name', tName).eq('round_num', round).eq('player1_id', byeId).single();
+              if (lastMatch) await supabase.from('tournament_matches').update({ winner_id: byeId, played_at: new Date() }).eq('id', lastMatch.id);
+            }
+
+            const matchCount    = matches.length;
+            const totalMatches  = matchCount;
+            const allLines      = [...matches1, ...matches];
+            const descLines     = [
+              `**Összes játékos: ${pRows.length}**`,
+              `**Meccsek száma: ${totalMatches}**`,
+              `${autoAdvanceText ? `**Automatikusan továbbjutó:** ${autoAdvanceText}` : ''}`,
+              `**Meccsek:**`,
+              ...matches.map(l => l),
+              '',
+              '**Ajánlott szerver:** eu.minemen.club',
+              'Sok sikert kívánunk mindenkinek!',
+            ].filter(Boolean);
+
+            await interaction.reply({ embeds: [new EmbedBuilder().setColor(0x00FF00)
+              .setTitle(`**${tName}** Tournament ${round}. Köre Elkezdődött!`)
+              .setDescription(descLines.join('\n'))] });
           } else {
             await supabase.from('tournament_rounds').update({ status: 'done', ended_at: new Date() }).eq('tournament_name', tName).eq('round_num', round);
             await interaction.reply({ embeds: [new EmbedBuilder().setColor(0xFF8C00).setTitle(`${tName} — ${round}. kör lezárva!`)] });
