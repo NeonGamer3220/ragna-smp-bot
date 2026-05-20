@@ -25,7 +25,6 @@ const ADMIN_IDS            = new Set(
 );
 
 function isAdmin(interaction) {
-  if (ADMIN_IDS.has(String(interaction.user.id))) return true;
   const roles = interaction.member?.roles?.cache;
   return roles ? roles.has(SUPERADMIN_ROLE) : false;
 }
@@ -606,7 +605,6 @@ client.on('interactionCreate', async interaction => {
       if (n === 'teamcreate') {
         const name = interaction.options.getString('name');
         if (interaction.channelId !== TEAM_CREATE_CH) { await interaction.reply({ content: 'Csak a csapat-készítő csatornában!', ephemeral: true }); return; }
-        if (!interaction.member?.roles?.cache?.has(TEAM_CREATE_ROLE)) { await interaction.reply({ content: 'Nincs jogod!', ephemeral: true }); return; }
 
         const { data: existing } = await supabase.from('teams').select('name').eq('name', name).maybeSingle();
         if (existing) { await interaction.reply({ content: 'Már létezik ez a csapatnév!', ephemeral: true }); return; }
